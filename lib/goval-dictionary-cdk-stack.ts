@@ -1,16 +1,9 @@
 import * as cdk from '@aws-cdk/core';
-import {
-  InstanceClass, InstanceSize,
-  InstanceType,
-  Peer,
-  Port,
-  SecurityGroup,
-  Vpc
-} from '@aws-cdk/aws-ec2';
+import {Duration, Tag} from '@aws-cdk/core';
+import {InstanceClass, InstanceSize, InstanceType, Peer, Port, SecurityGroup, SubnetType, Vpc} from '@aws-cdk/aws-ec2';
 import {AwsLogDriver, Cluster, ContainerImage, Ec2TaskDefinition} from '@aws-cdk/aws-ecs';
 import {LogGroup} from '@aws-cdk/aws-logs';
 import {ApplicationLoadBalancedEc2Service} from '@aws-cdk/aws-ecs-patterns';
-import {Duration, Tag} from '@aws-cdk/core';
 import {DnsRecordType, PrivateDnsNamespace} from '@aws-cdk/aws-servicediscovery';
 import {ApplicationProtocol} from '@aws-cdk/aws-elasticloadbalancingv2';
 
@@ -42,6 +35,10 @@ export class GovalDictionaryCdkStack extends cdk.Stack {
       instanceType: InstanceType.of(InstanceClass.BURSTABLE3, InstanceSize.MICRO),
       minCapacity: 1,
       maxCapacity: 1,
+      //associatePublicIpAddress: true,
+      vpcSubnets: {
+        subnetType: SubnetType.PUBLIC,
+      },
       keyName: 'goval-dictionary-key',
     });
 
@@ -66,6 +63,9 @@ export class GovalDictionaryCdkStack extends cdk.Stack {
       cpu: 256,
       memoryLimitMiB: 512,
       logging: awsLogDriver,
+      // MEMO: Override by empty commands
+      entryPoint: [],
+      command: [],
     });
 
     appContainer.addPortMappings({
