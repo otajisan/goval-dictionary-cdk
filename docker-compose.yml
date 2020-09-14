@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  goval-dictionary:
+    image: vuls/goval-dictionary:latest
+    container_name: goval-dictionary
+    expose:
+      - '1324'
+    ports:
+      - '80:1324'
+    volumes:
+      - ./:/vuls
+      - ./goval-dictionary-log:/var/log/vuls
+    command:
+      server -debug-sql -log-json -bind=0.0.0.0

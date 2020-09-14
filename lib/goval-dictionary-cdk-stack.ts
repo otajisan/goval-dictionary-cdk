@@ -1,9 +1,9 @@
 import * as cdk from '@aws-cdk/core';
-import {Duration, Tag} from '@aws-cdk/core';
-import {InstanceClass, InstanceSize, InstanceType, Peer, Port, SecurityGroup, SubnetType, Vpc} from '@aws-cdk/aws-ec2';
-import {AwsLogDriver, Cluster, ContainerImage, Ec2TaskDefinition} from '@aws-cdk/aws-ecs';
+import {Duration, RemovalPolicy, Tags} from '@aws-cdk/core';
+import {Peer, Port, SecurityGroup, Vpc} from '@aws-cdk/aws-ec2';
+import {AwsLogDriver, Cluster, ContainerImage, FargateTaskDefinition} from '@aws-cdk/aws-ecs';
 import {LogGroup} from '@aws-cdk/aws-logs';
-import {ApplicationLoadBalancedEc2Service} from '@aws-cdk/aws-ecs-patterns';
+import {ApplicationLoadBalancedFargateService} from '@aws-cdk/aws-ecs-patterns';
 import {DnsRecordType, PrivateDnsNamespace} from '@aws-cdk/aws-servicediscovery';
 import {ApplicationProtocol} from '@aws-cdk/aws-elasticloadbalancingv2';
 
@@ -19,10 +19,11 @@ export class GovalDictionaryCdkStack extends cdk.Stack {
 
     // Security Group
     const securityGroup = new SecurityGroup(this, 'SecurityGroup', {
-      vpc
+      vpc: vpc,
+      allowAllOutbound: false,
     });
     securityGroup.addEgressRule(Peer.anyIpv4(), Port.allTraffic());
-    securityGroup.addIngressRule(Peer.ipv4('0.0.0.0/0'), Port.tcp(22));
+    //securityGroup.addIngressRule(Peer.ipv4('0.0.0.0/0'), Port.tcp(22));
     securityGroup.addIngressRule(Peer.ipv4('0.0.0.0/0'), Port.tcp(80));
 
     // ECS Cluster
@@ -31,50 +32,54 @@ export class GovalDictionaryCdkStack extends cdk.Stack {
       vpc: vpc,
     });
 
-    ecsCluster.addCapacity('Capacity', {
-      instanceType: InstanceType.of(InstanceClass.BURSTABLE3, InstanceSize.MICRO),
-      minCapacity: 1,
-      maxCapacity: 1,
-      //associatePublicIpAddress: true,
-      vpcSubnets: {
-        subnetType: SubnetType.PUBLIC,
-      },
-      keyName: 'goval-dictionary-key',
-    });
-
+    // ecsCluster.addCapacity('Capacity', {
+    //   instanceType: InstanceType.of(InstanceClass.BURSTABLE3, InstanceSize.MICRO),
+    //   minCapacity: 1,
+    //   maxCapacity: 1,
+    //   //associatePublicIpAddress: true,
+    //   vpcSubnets: {
+    //     subnetType: SubnetType.PUBLIC,
+    //   },
+    //   keyName: 'goval-dictionary-key',
+    // });
 
     // ECS Log setting
-    const awsLogDriver = new AwsLogDriver({
+    const logDriver = new AwsLogDriver({
       logGroup: new LogGroup(this, 'LogGroup', {
         logGroupName: 'goval-dictionary',
+        removalPolicy: RemovalPolicy.DESTROY,
       }),
       streamPrefix: 'goval-dictionary',
-    })
+    });
 
     // Container
-    const containerImage = ContainerImage.fromRegistry('vuls/goval-dictionary:latest')
+    const containerImage = ContainerImage.fromRegistry('vuls/goval-dictionary:latest');
 
     // Task Definition
-    const taskDefinition = new Ec2TaskDefinition(this, 'TaskDefinition')
+    const taskDefinition = new FargateTaskDefinition(this, 'TaskDefinition', {
+      memoryLimitMiB: 512,
+      cpu: 256,
+    });
+
+    // // Task Definition
+    // const taskDefinition = new Ec2TaskDefinition(this, 'TaskDefinition');
 
     // Container
     const appContainer = taskDefinition.addContainer('AppContainer', {
       image: containerImage,
-      cpu: 256,
       memoryLimitMiB: 512,
-      logging: awsLogDriver,
-      // MEMO: Override by empty commands
-      entryPoint: [],
-      command: [],
+      logging: logDriver,
+      //entryPoint: [],
+      command: ['server', '-debug-sql', '-log-json', '-bind=0.0.0.0'],
     });
 
     appContainer.addPortMappings({
-      containerPort: 80,
-      hostPort: 80,
+      containerPort: 1324,
+      //hostPort: 80,
     });
 
-    // ECS
-    const ec2Service = new ApplicationLoadBalancedEc2Service(this, 'EC2Service', {
+    // ECS - Fargate
+    const ecsService = new ApplicationLoadBalancedFargateService(this, 'ECSService', {
       cluster: ecsCluster,
       serviceName: 'goval-dictionary-service',
       desiredCount: 1,
@@ -84,6 +89,18 @@ export class GovalDictionaryCdkStack extends cdk.Stack {
       cpu: 256,
       memoryLimitMiB: 512,
     });
+
+    // // ECS - EC2
+    // const ecsService = new ApplicationLoadBalancedEc2Service(this, 'EC2Service', {
+    //   cluster: ecsCluster,
+    //   serviceName: 'goval-dictionary-service',
+    //   desiredCount: 1,
+    //   taskDefinition: taskDefinition,
+    //   protocol: ApplicationProtocol.HTTP,
+    //   publicLoadBalancer: true,
+    //   cpu: 256,
+    //   memoryLimitMiB: 512,
+    // });
 
     // Cloud Map
     const namespace = new PrivateDnsNamespace(this, 'NameSpace', {
@@ -98,9 +115,9 @@ export class GovalDictionaryCdkStack extends cdk.Stack {
       loadBalancer: true,
     });
 
-    service.registerLoadBalancer('LoadBalancer', ec2Service.loadBalancer)
+    service.registerLoadBalancer('LoadBalancer', ecsService.loadBalancer);
 
     // tagging
-    Tag.add(this, 'ServiceName', 'goval-dictionary')
+    Tags.of(this).add('ServiceName', 'goval-dictionary');
   }
 }
