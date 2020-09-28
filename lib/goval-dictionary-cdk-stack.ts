@@ -1,47 +1,57 @@
 import * as cdk from '@aws-cdk/core';
-import {Duration, RemovalPolicy, Tags} from '@aws-cdk/core';
-import {Peer, Port, SecurityGroup, Vpc} from '@aws-cdk/aws-ec2';
+import {Duration, RemovalPolicy, SecretValue, Tags} from '@aws-cdk/core';
+import {InstanceClass, InstanceSize, InstanceType, Peer, Port, SecurityGroup, Vpc} from '@aws-cdk/aws-ec2';
 import {AwsLogDriver, Cluster, ContainerImage, FargateTaskDefinition} from '@aws-cdk/aws-ecs';
 import {LogGroup} from '@aws-cdk/aws-logs';
 import {ApplicationLoadBalancedFargateService} from '@aws-cdk/aws-ecs-patterns';
-import {DnsRecordType, PrivateDnsNamespace} from '@aws-cdk/aws-servicediscovery';
-import {ApplicationProtocol} from '@aws-cdk/aws-elasticloadbalancingv2';
+import {DatabaseInstance, DatabaseInstanceEngine, MysqlEngineVersion, PostgresEngineVersion} from '@aws-cdk/aws-rds';
 
 export class GovalDictionaryCdkStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // VPC
-    const vpc = new Vpc(this, 'Vpc', {
-      maxAzs: 2,
-      cidr: '10.0.0.0/16',
-    });
-
+    const vpc = Vpc.fromLookup(this, 'Vpc', {vpcName: 'VpcStack/Vpc'});
     // Security Group
     const securityGroup = new SecurityGroup(this, 'SecurityGroup', {
       vpc: vpc,
-      allowAllOutbound: false,
+      securityGroupName: 'GovalDictionaryRDSSg',
+      allowAllOutbound: true,
     });
-    securityGroup.addEgressRule(Peer.anyIpv4(), Port.allTraffic());
-    //securityGroup.addIngressRule(Peer.ipv4('0.0.0.0/0'), Port.tcp(22));
-    securityGroup.addIngressRule(Peer.ipv4('0.0.0.0/0'), Port.tcp(80));
+    //securityGroup.addEgressRule(Peer.anyIpv4(), Port.allTraffic(), 'goval-dictionary egress');
+    securityGroup.addIngressRule(Peer.anyIpv4(), Port.tcp(5432), 'goval-dictionary access from local', false);
+
+    // RDS
+    const rds = new DatabaseInstance(this, 'GovalDictionaryDB', {
+      vpc: vpc,
+      securityGroups: [securityGroup],
+      instanceIdentifier: 'goval-dictionary-db',
+      instanceType: InstanceType.of(InstanceClass.T3, InstanceSize.MICRO),
+      masterUsername: 'root',
+      masterUserPassword: SecretValue.plainText('password'),
+      engine: DatabaseInstanceEngine.postgres({
+        version: PostgresEngineVersion.VER_12,
+      }),
+      databaseName: 'govaldb',
+      iamAuthentication: true,
+      enablePerformanceInsights: true,
+      autoMinorVersionUpgrade: true,
+      multiAz: false,
+      backupRetention: Duration.days(7),
+      deletionProtection: false,
+      port: 5432,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    //rds.connections.allowDefaultPortFrom(securityGroup);
+
+    const dbUrl = 'jdbc:postgresql://' + rds.dbInstanceEndpointAddress + ':' + rds.dbInstanceEndpointPort + '/govaldb';
 
     // ECS Cluster
     const ecsCluster = new Cluster(this, 'EcsCluster', {
       clusterName: 'goval-dictionary-cluster',
       vpc: vpc,
     });
-
-    // ecsCluster.addCapacity('Capacity', {
-    //   instanceType: InstanceType.of(InstanceClass.BURSTABLE3, InstanceSize.MICRO),
-    //   minCapacity: 1,
-    //   maxCapacity: 1,
-    //   //associatePublicIpAddress: true,
-    //   vpcSubnets: {
-    //     subnetType: SubnetType.PUBLIC,
-    //   },
-    //   keyName: 'goval-dictionary-key',
-    // });
 
     // ECS Log setting
     const logDriver = new AwsLogDriver({
@@ -61,61 +71,27 @@ export class GovalDictionaryCdkStack extends cdk.Stack {
       cpu: 256,
     });
 
-    // // Task Definition
-    // const taskDefinition = new Ec2TaskDefinition(this, 'TaskDefinition');
-
-    // Container
-    const appContainer = taskDefinition.addContainer('AppContainer', {
-      image: containerImage,
-      memoryLimitMiB: 512,
-      logging: logDriver,
-      //entryPoint: [],
-      command: ['server', '-debug-sql', '-log-json', '-bind=0.0.0.0'],
-    });
-
-    appContainer.addPortMappings({
+    // Application Container
+    taskDefinition.addContainer('AppContainer', {
+        image: containerImage,
+        memoryLimitMiB: 512,
+        logging: logDriver,
+        command: ['fetch-ubuntu', '14', '16', '18', '19', '20', '-dbtype=postgres', '-dbpath=' + dbUrl],
+        // command: ['server', '-debug-sql', '-log-json', '-bind=0.0.0.0'], // server mode
+      }
+    ).addPortMappings({
       containerPort: 1324,
-      //hostPort: 80,
     });
 
     // ECS - Fargate
-    const ecsService = new ApplicationLoadBalancedFargateService(this, 'ECSService', {
+    new ApplicationLoadBalancedFargateService(this, 'ECSService', {
       cluster: ecsCluster,
       serviceName: 'goval-dictionary-service',
       desiredCount: 1,
       taskDefinition: taskDefinition,
-      protocol: ApplicationProtocol.HTTP,
-      publicLoadBalancer: true,
       cpu: 256,
       memoryLimitMiB: 512,
     });
-
-    // // ECS - EC2
-    // const ecsService = new ApplicationLoadBalancedEc2Service(this, 'EC2Service', {
-    //   cluster: ecsCluster,
-    //   serviceName: 'goval-dictionary-service',
-    //   desiredCount: 1,
-    //   taskDefinition: taskDefinition,
-    //   protocol: ApplicationProtocol.HTTP,
-    //   publicLoadBalancer: true,
-    //   cpu: 256,
-    //   memoryLimitMiB: 512,
-    // });
-
-    // Cloud Map
-    const namespace = new PrivateDnsNamespace(this, 'NameSpace', {
-      name: 'my-goval-dictionary',
-      vpc: vpc,
-    });
-
-    const service = namespace.createService('Service', {
-      name: 'goval-dictionary',
-      dnsRecordType: DnsRecordType.A_AAAA,
-      dnsTtl: Duration.seconds(30),
-      loadBalancer: true,
-    });
-
-    service.registerLoadBalancer('LoadBalancer', ecsService.loadBalancer);
 
     // tagging
     Tags.of(this).add('ServiceName', 'goval-dictionary');
